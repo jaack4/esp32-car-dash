@@ -78,23 +78,6 @@ Set `DEVELOPMENT_TEAM` in `ios/project.yml` to your Apple team ID, then build to
 
 On first launch the app finds the board over Bluetooth LE and remembers it. Allow "Always" location access so it can send weather when the car starts without being opened. Weather comes from [Open-Meteo](https://open-meteo.com/), which needs no API key. Avoid swiping the app away in the app switcher, since iOS won't wake it in the background after that.
 
-## Installing in a car
-
-- Power the board from a USB charger in the 12 V socket, and run the aux cable from the DAC to the car's aux input.
-- Insulate the bottom of both boards and secure the jumper wires so nothing shorts or shakes loose.
-- Don't put the ESP32's antenna inside a metal case, or Bluetooth will drop out.
-- Keep it out of direct sun. A parked car's dashboard gets hotter than the OLED is rated for.
-
-## Troubleshooting
-
-| Problem | Fix |
-|---|---|
-| Song info on screen but no sound | Check the DAC jumpers (H3 high) and that SCK is grounded |
-| Whine that rises with engine speed | Add a ground loop isolator on the aux cable |
-| Distortion at high volume | Lower the phone volume and turn up the car |
-| Phone doesn't reconnect | Tap **ESP32 Car Audio** in the phone's Bluetooth settings |
-| No weather on the screen | Open Car Dash and check that it shows Connected and has location access |
-
 ## Credits
 
 Uses [ESP32-A2DP](https://github.com/pschatzmann/ESP32-A2DP) and [arduino-audio-tools](https://github.com/pschatzmann/arduino-audio-tools) by Phil Schatzmann, and the Adafruit SSD1306 and GFX libraries.
