@@ -1,2 +1,11 @@
+# PlatformIO
 .pio/
 .vscode/
+
+# iOS: build output, and files XcodeGen generates from ios/project.yml
+ios/build/
+ios/CarDash.xcodeproj/
+ios/CarDash/Info.plist
+xcuserdata/
+
+.DS_Store

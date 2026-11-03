@@ -1,0 +1,31 @@
+name: CarDash
+options:
+  bundleIdPrefix: com.jaack4
+  deploymentTarget:
+    iOS: "17.0"
+settings:
+  base:
+    DEVELOPMENT_TEAM: N34AUHTY5A   # change to your own Apple team ID
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  CarDash:
+    type: application
+    platform: iOS
+    sources: [CarDash]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jaack4.cardash
+        TARGETED_DEVICE_FAMILY: "1"
+    info:
+      path: CarDash/Info.plist
+      properties:
+        CFBundleDisplayName: Car Dash
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UIBackgroundModes: [bluetooth-central]
+        NSBluetoothAlwaysUsageDescription: Car Dash connects to the ESP32 in your car to show weather on its screen.
+        NSLocationWhenInUseUsageDescription: Car Dash uses your location to show your city and local weather on the car screen.
+        NSLocationAlwaysAndWhenInUseUsageDescription: Allow Always so the car screen gets your city and weather when you start the car, without opening the app.
