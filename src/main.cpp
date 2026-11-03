@@ -1,29 +1,37 @@
 // Bluetooth car audio receiver: the phone streams music over Bluetooth (A2DP),
 // the ESP32 sends it to a PCM5102A DAC for the car's AUX input, and the OLED
-// shows the song, artist and progress. BOOT button: tap = play/pause, hold = next track.
+// shows the song, artist and progress. The Car Dash iPhone app adds a weather page over BLE.
+// BOOT button: tap = play/pause, hold = next track, double-tap = next page
+// (combo -> music -> weather).
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include "AudioTools.h"
 #include "BluetoothA2DPSink.h"
+#include "phone_link.h"
+#include "status_led.h"
+#include "effects_output.h"
 
 const char *BT_NAME = "ESP32 Car Audio";
 
-// PCM5102A wiring (VIN -> 3V3, GND -> GND, SCK -> GND)
+// Purple regulated PCM5102A module: VIN -> USB 5V/VIN, GND -> GND, SCK -> GND.
 const int I2S_BCK = 26, I2S_LRCK = 25, I2S_DIN = 27;
 const int OLED_SDA = 21, OLED_SCL = 22;
 const int BUTTON_PIN = 0;          // BOOT button, low while pressed
 const uint32_t HOLD_MS = 600;      // press longer than this = next track
+const uint32_t DOUBLE_TAP_MS = 350; // second tap within this = switch page
 const uint32_t POLL_MS = 1000;     // how often to ask the phone for the playback position
 const uint8_t TL_PLAY_STATUS = 5;  // AVRCP transaction label (the library uses 0-4)
 
 Adafruit_SSD1306 display(128, 64, &Wire, -1, 100000, 100000);
 I2SStream i2s;
-BluetoothA2DPSink a2dp(i2s);
+EffectsOutput audioEffects(i2s);
+BluetoothA2DPSink a2dp(audioEffects);
 
 // Track info arrives on the Bluetooth task; the main loop copies it out under this lock.
 portMUX_TYPE infoLock = portMUX_INITIALIZER_UNLOCKED;
+bool selectComboPending = false;  // Bluetooth task requests; main loop changes the page
 struct TrackInfo {
   char title[96] = "";
   char artist[64] = "";
@@ -36,6 +44,17 @@ struct TrackInfo {
   bool statusKnown = false;   // the phone has sent a play/pause status since connecting
   bool connected = false;
 } info;
+
+// phone volume (AVRCP absolute volume, 0-127); a change shows the volume overlay briefly
+const uint32_t VOLUME_OVERLAY_MS = 1500;
+volatile int volumeLevel = -1;
+volatile uint32_t volumeChangedAt = 0, connectedAt = 0;
+
+void onVolume(int volume) {
+  volumeLevel = volume;
+  volumeChangedAt = millis();
+  Serial.printf("Volume %d/127\n", volume);
+}
 
 // audio bytes received from the phone, for the once-a-second log (CD quality = 176,400 B/s)
 volatile uint32_t audioBytes = 0;
@@ -128,7 +147,9 @@ void onConnection(esp_a2d_connection_state_t state, void *) {
   portENTER_CRITICAL(&infoLock);
   info.connected = state == ESP_A2D_CONNECTION_STATE_CONNECTED;
   if (!info.connected) info = TrackInfo();
+  else selectComboPending = true;
   portEXIT_CRITICAL(&infoLock);
+  if (state == ESP_A2D_CONNECTION_STATE_CONNECTED) connectedAt = millis();
   Serial.printf("Bluetooth %s\n", a2dp.to_str(state));
 }
 
@@ -150,29 +171,20 @@ void drawScrolling(const char *text, int y, uint32_t now) {
   display.print(text);
 }
 
-void drawScreen() {
-  TrackInfo t;
-  portENTER_CRITICAL(&infoLock);
-  t = info;
-  portEXIT_CRITICAL(&infoLock);
-  uint32_t now = millis();
+enum Page { COMBO, MUSIC, WEATHER };
+Page page = COMBO;
 
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-  display.setTextWrap(false);
+void drawPairingHint() {
+  display.setTextSize(1);
+  display.setCursor(0, 4);
+  display.print("Bluetooth ready");
+  display.setCursor(0, 24);
+  display.print("Pair your phone with");
+  display.setCursor(0, 40);
+  display.print(BT_NAME);
+}
 
-  if (!t.connected) {
-    display.setTextSize(1);
-    display.setCursor(0, 4);
-    display.print("Bluetooth ready");
-    display.setCursor(0, 24);
-    display.print("Pair your phone with");
-    display.setCursor(0, 40);
-    display.print(BT_NAME);
-    display.display();
-    return;
-  }
-
+void drawMusicPage(const TrackInfo &t, uint32_t now) {
   // top (yellow) strip: play/pause icon and elapsed / total time
   uint32_t pos = positionMs(t, now);
   if (t.playing) {
@@ -196,13 +208,96 @@ void drawScreen() {
   display.print(t.artist);
   display.drawRect(0, 54, 128, 8, SSD1306_WHITE);
   if (t.lengthMs) display.fillRect(2, 56, (uint32_t)124 * pos / t.lengthMs, 4, SSD1306_WHITE);
+}
 
+// music and weather together: clock, city and temperature in the yellow strip,
+// then the song, artist, progress bar and times
+void drawComboPage(const TrackInfo &t, uint32_t now) {
+  drawWeatherStrip(display);
+  drawScrolling(t.title[0] ? t.title : (t.connected ? "Connected" : "No audio"), 18, now);
+  display.setTextSize(1);
+  display.setCursor(0, 36);
+  display.print(t.connected ? t.artist : "Connect in Bluetooth");
+
+  uint32_t pos = positionMs(t, now);
+  display.drawRect(0, 46, 128, 6, SSD1306_WHITE);
+  if (t.lengthMs) display.fillRect(1, 47, (uint32_t)126 * pos / t.lengthMs, 4, SSD1306_WHITE);
+
+  if (t.playing) {
+    display.fillTriangle(0, 56, 0, 62, 5, 59, SSD1306_WHITE);
+  } else {
+    display.fillRect(0, 56, 2, 7, SSD1306_WHITE);
+    display.fillRect(4, 56, 2, 7, SSD1306_WHITE);
+  }
+  char elapsed[12], total[12];
+  formatTime(elapsed, sizeof(elapsed), pos);
+  formatTime(total, sizeof(total), t.lengthMs);
+  display.setCursor(10, 56);
+  display.print(elapsed);
+  drawPhoneBattery(display, 44, 56);
+  display.setCursor(128 - strlen(total) * 6, 56);
+  display.print(total);
+}
+
+// box with a volume bar over whatever page is showing, for a moment after the phone's volume
+// changes (not for the volume the phone sets right after connecting)
+void drawVolumeOverlay(uint32_t now) {
+  int volume = volumeLevel;
+  if (volume < 0 || now - volumeChangedAt > VOLUME_OVERLAY_MS || volumeChangedAt - connectedAt < 3000) return;
+  display.fillRect(8, 18, 112, 30, SSD1306_BLACK);
+  display.drawRect(8, 18, 112, 30, SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setCursor(14, 22);
+  display.print("Volume");
+  char pct[8];
+  snprintf(pct, sizeof(pct), "%d%%", (volume * 100 + 63) / 127);
+  display.setCursor(114 - strlen(pct) * 6, 22);
+  display.print(pct);
+  display.drawRect(14, 34, 100, 8, SSD1306_WHITE);
+  display.fillRect(16, 36, 96 * volume / 127, 4, SSD1306_WHITE);
+}
+
+void drawScreen() {
+  TrackInfo t;
+  portENTER_CRITICAL(&infoLock);
+  t = info;
+  bool selectCombo = selectComboPending;
+  selectComboPending = false;
+  portEXIT_CRITICAL(&infoLock);
+  if (selectCombo) page = COMBO;
+
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextWrap(false);
+  uint32_t now = millis();
+  bool weather = hasWeather();
+  if (weather && page == COMBO) {
+    drawComboPage(t, now);
+  } else if (!t.connected) {
+    if (weather) drawWeatherPage(display);
+    else drawPairingHint();
+  } else if (weather && page == WEATHER) {
+    drawWeatherPage(display);
+  } else {
+    drawMusicPage(t, now);   // the music page, or combo/weather before any weather has arrived
+  }
+  drawVolumeOverlay(now);
   display.display();
 }
 
+void togglePlayback() {
+  bool playing;
+  portENTER_CRITICAL(&infoLock);
+  playing = info.playing;
+  portEXIT_CRITICAL(&infoLock);
+  if (playing) a2dp.pause(); else a2dp.play();
+}
+
+// tap = play/pause (after a short wait to rule out a double-tap),
+// double-tap = switch page, hold = next track
 void handleButton() {
   static bool wasDown = false, holdFired = false;
-  static uint32_t downAt = 0;
+  static uint32_t downAt = 0, tapAt = 0;
   bool down = digitalRead(BUTTON_PIN) == LOW;
   uint32_t now = millis();
 
@@ -210,20 +305,27 @@ void handleButton() {
     downAt = now;
     holdFired = false;
   } else if (down && !holdFired && now - downAt > HOLD_MS) {
-    a2dp.next();                                      // held: next track
+    a2dp.next();
     holdFired = true;
-  } else if (!down && wasDown && !holdFired && now - downAt > 50) {
-    bool playing;                                     // released quickly: play/pause
-    portENTER_CRITICAL(&infoLock);
-    playing = info.playing;
-    portEXIT_CRITICAL(&infoLock);
-    if (playing) a2dp.pause(); else a2dp.play();
+    tapAt = 0;
+  } else if (!down && wasDown && !holdFired && now - downAt > 50) {   // released quickly
+    if (tapAt && now - tapAt < DOUBLE_TAP_MS) {
+      page = (Page)((page + 1) % 3);
+      tapAt = 0;
+    } else {
+      tapAt = now;
+    }
+  }
+  if (tapAt && !down && now - tapAt >= DOUBLE_TAP_MS) {
+    togglePlayback();
+    tapAt = 0;
   }
   wasDown = down;
 }
 
 void setup() {
   Serial.begin(115200);
+  startStatusLed();
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   Wire.begin(OLED_SDA, OLED_SCL);
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
@@ -241,11 +343,16 @@ void setup() {
   a2dp.set_avrc_rn_play_pos_callback(onPosition, 1);
   a2dp.set_avrc_rn_track_change_callback(onTrackChange);
   a2dp.set_on_connection_state_changed(onConnection);
+  a2dp.set_avrc_rn_volumechange(onVolume);
   a2dp.set_stream_reader(onAudio, true);   // count audio bytes, still play them through I2S
   a2dp.set_auto_reconnect(true);   // reconnect to the last phone when the car starts
+  a2dp.set_default_bt_mode(ESP_BT_MODE_BTDM);   // keep BLE available for the phone app
   a2dp.start(BT_NAME);
   esp_avrc_ct_register_callback(avrcControllerEvent);   // replaces the library's, which we forward to
   Serial.printf("Bluetooth started as \"%s\"\n", BT_NAME);
+  startPhoneLink(BT_NAME);
+  audioEffects.prepare();
+  publishEffectsStatus();
 }
 
 // Once a second: log the audio rate, and if music is flowing but the phone hasn't told us
@@ -271,8 +378,38 @@ void checkAudio() {
   }
 }
 
+// Debug aids over serial, so layouts can be checked without the phone or looking at the board:
+//   s            -> screen contents as hex (SSD1306 page layout)
+//   l            -> GPIO2's configured PWM duty and frequency
+//   r            -> test the two-flash LED pattern without changing weather
+//   a            -> audio effects diagnostic status
+//   W|... B|... R|... EQ|... BASS|... WIDE|... -> phone messages (see phone_link.h)
+void handleSerial() {
+  if (!Serial.available()) return;
+  int c = Serial.peek();
+  if (c == 'W' || c == 'B' || c == 'R' || c == 'E') {
+    handlePhoneMessage(Serial.readStringUntil('\n'));
+    return;
+  }
+  Serial.read();
+  if (c == 'l') { printStatusLed(); return; }
+  if (c == 'r') { updateStatusLed(a2dp.is_connected(), true); return; }
+  if (c == 'a') { audioEffects.printStatus(); return; }
+  if (c != 's') return;
+  const uint8_t *buf = display.getBuffer();
+  Serial.print("SCREEN ");
+  for (int i = 0; i < 128 * 64 / 8; i++) Serial.printf("%02x", buf[i]);
+  Serial.println();
+}
+
 void loop() {
   handleButton();
+  handleSerial();
+  bool audioConnected;
+  portENTER_CRITICAL(&infoLock);
+  audioConnected = info.connected;
+  portEXIT_CRITICAL(&infoLock);
+  updateStatusLed(audioConnected, takeRainAlert());
   checkAudio();
   pollPlayStatus();
   static uint32_t lastDraw = 0;
