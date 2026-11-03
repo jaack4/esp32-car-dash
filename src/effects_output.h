@@ -43,4 +43,4 @@ class EffectsOutput : public audio_tools::AudioOutput {
   bool flushPending();
 };
 
-extern EffectsOutput audioEffects;
+EffectsOutput &audioEffects();

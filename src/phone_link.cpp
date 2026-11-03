@@ -31,10 +31,10 @@ static BLECharacteristic *dashData = nullptr;
 static std::atomic<bool> phoneConnected{false};
 
 static String effectsStatus() {
-  ToneSettings t = audioEffects.tone();
+  ToneSettings t = audioEffects().tone();
   char value[80];
-  snprintf(value, sizeof(value), "FX|%d|%d|%s|%d|%d|%d|%d|%d|%d|%d|%d", audioEffects.available(),
-           audioEffects.enabled(), reverbPresetName(audioEffects.preset()), t.eqOn, t.bass, t.mid, t.treble,
+  snprintf(value, sizeof(value), "FX|%d|%d|%s|%d|%d|%d|%d|%d|%d|%d|%d", audioEffects().available(),
+           audioEffects().enabled(), reverbPresetName(audioEffects().preset()), t.eqOn, t.bass, t.mid, t.treble,
            t.bassBoostOn, t.bassBoostLevel, t.widenerOn, t.widthLevel);
   return String(value);
 }
@@ -49,17 +49,17 @@ void publishEffectsStatus() {
 
 static void parseMessage(const String &message) {
   bool enabled = false;
-  ReverbPreset preset = audioEffects.preset();
+  ReverbPreset preset = audioEffects().preset();
   if (parseReverbCommand(message.c_str(), enabled, preset)) {
-    bool accepted = audioEffects.setMode(enabled, preset);
+    bool accepted = audioEffects().setMode(enabled, preset);
     Serial.printf("Reverb request %s (%s): %s\n", enabled ? "ON" : "OFF",
                   reverbPresetName(preset), accepted ? "accepted" : "unavailable");
     publishEffectsStatus();
     return;
   }
-  ToneSettings tone = audioEffects.tone();
+  ToneSettings tone = audioEffects().tone();
   if (parseToneCommand(message.c_str(), tone)) {
-    audioEffects.setTone(tone);
+    audioEffects().setTone(tone);
     Serial.printf("Effects request: %s\n", message.c_str());
     publishEffectsStatus();
     return;

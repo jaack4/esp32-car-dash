@@ -26,8 +26,14 @@ const uint8_t TL_PLAY_STATUS = 5;  // AVRCP transaction label (the library uses 
 
 Adafruit_SSD1306 display(128, 64, &Wire, -1, 100000, 100000);
 I2SStream i2s;
-EffectsOutput audioEffects(i2s);
-BluetoothA2DPSink a2dp(audioEffects);
+BluetoothA2DPSink a2dp;
+
+// Built on first use instead of as a global: its AudioOutput base allocates (and logs) in its
+// constructor, which crashes at boot if it runs before the audio library's logger is set up.
+EffectsOutput &audioEffects() {
+  static EffectsOutput effects(i2s);
+  return effects;
+}
 
 // Track info arrives on the Bluetooth task; the main loop copies it out under this lock.
 portMUX_TYPE infoLock = portMUX_INITIALIZER_UNLOCKED;
@@ -336,6 +342,7 @@ void setup() {
   cfg.pin_data = I2S_DIN;
   i2s.begin(cfg);
 
+  a2dp.set_output(audioEffects());
   a2dp.set_avrc_metadata_attribute_mask(ESP_AVRC_MD_ATTR_TITLE | ESP_AVRC_MD_ATTR_ARTIST |
                                         ESP_AVRC_MD_ATTR_PLAYING_TIME);
   a2dp.set_avrc_metadata_callback(onMetadata);
@@ -351,7 +358,7 @@ void setup() {
   esp_avrc_ct_register_callback(avrcControllerEvent);   // replaces the library's, which we forward to
   Serial.printf("Bluetooth started as \"%s\"\n", BT_NAME);
   startPhoneLink(BT_NAME);
-  audioEffects.prepare();
+  audioEffects().prepare();
   publishEffectsStatus();
 }
 
@@ -394,7 +401,7 @@ void handleSerial() {
   Serial.read();
   if (c == 'l') { printStatusLed(); return; }
   if (c == 'r') { updateStatusLed(a2dp.is_connected(), true); return; }
-  if (c == 'a') { audioEffects.printStatus(); return; }
+  if (c == 'a') { audioEffects().printStatus(); return; }
   if (c != 's') return;
   const uint8_t *buf = display.getBuffer();
   Serial.print("SCREEN ");
